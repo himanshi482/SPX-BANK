@@ -35,7 +35,12 @@ ln -sfn "$release" "$web_root/current"
 ln -sfn /etc/nginx/sites-available/spx-banking /etc/nginx/sites-enabled/spx-banking
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
-systemctl enable --now nginx
+systemctl enable nginx
+if systemctl is-active --quiet nginx; then
+  systemctl reload nginx
+else
+  systemctl start nginx
+fi
 
 echo "Web EC2 setup complete. Open http://${domain} after DNS points to this web EC2 public IP."
 
