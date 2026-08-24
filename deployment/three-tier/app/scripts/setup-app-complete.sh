@@ -25,7 +25,9 @@ ask() {
 ask_secret() {
   local prompt=$1 value
   read -r -s -p "$prompt: " value
-  echo
+  # Write the visual line break to stderr so command substitution captures only
+  # the password itself, without a leading newline.
+  echo >&2
   printf '%s' "$value"
 }
 
