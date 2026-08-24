@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+release_id="${1:?Git commit SHA is required}"
+artifact_uri="${2:?S3 artifact URI is required}"
+root=/srv/spx-app
+release="$root/releases/$release_id"
+venv="$root/venv"
+archive="/tmp/spx-app-$release_id.tar.gz"
+
+install -d -o ubuntu -g spxapp -m 0755 "$root/releases"
+aws s3 cp "$artifact_uri" "$archive"
+rm -rf "$release"
+install -d -o ubuntu -g spxapp -m 0755 "$release"
+tar -xzf "$archive" -C "$release"
+
+python3 -m venv "$venv"
+"$venv/bin/pip" install --disable-pip-version-check --upgrade pip
+"$venv/bin/pip" install --disable-pip-version-check -r "$release/requirements.txt"
+
+chown -R ubuntu:spxapp "$release"
+chown -R spxapp:spxapp "$venv"
+ln -sfn "$release" "$root/current"
+systemctl restart spx-banking
+
+for _ in {1..20}; do
+  curl --fail --silent http://127.0.0.1:5000/ >/dev/null && exit 0
+  sleep 1
+done
+
+echo 'Application service did not become healthy.' >&2
+exit 1

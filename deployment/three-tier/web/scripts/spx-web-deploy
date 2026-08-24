@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+release_id="${1:?Git commit SHA is required}"
+artifact_uri="${2:?S3 artifact URI is required}"
+root=/srv/spx-web
+release="$root/releases/$release_id"
+archive="/tmp/spx-web-$release_id.tar.gz"
+
+install -d -o ubuntu -g www-data -m 0755 "$root/releases"
+aws s3 cp "$artifact_uri" "$archive"
+rm -rf "$release"
+install -d -o ubuntu -g www-data -m 0755 "$release"
+tar -xzf "$archive" -C "$release"
+test -d "$release/public"
+ln -sfn "$release" "$root/current"
+nginx -t
+systemctl reload nginx

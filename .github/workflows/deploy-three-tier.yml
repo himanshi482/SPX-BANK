@@ -1,0 +1,122 @@
+name: Deploy three-tier application
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: spx-three-tier-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  DEPLOYMENT_BUCKET: ${{ vars.DEPLOYMENT_BUCKET }}
+
+jobs:
+  package:
+    name: Package and upload release
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      artifact_uri: ${{ steps.upload.outputs.artifact_uri }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create release archive
+        run: |
+          tar \
+            --exclude-vcs \
+            --exclude='.env' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            -czf "spx-banking-${GITHUB_SHA}.tar.gz" .
+
+      - name: Upload release to S3
+        id: upload
+        run: |
+          artifact_uri="s3://${DEPLOYMENT_BUCKET}/spx-banking/releases/${GITHUB_SHA}.tar.gz"
+          aws s3 cp "spx-banking-${GITHUB_SHA}.tar.gz" "$artifact_uri" --only-show-errors
+          echo "artifact_uri=$artifact_uri" >> "$GITHUB_OUTPUT"
+
+  deploy_application:
+    name: Deploy application EC2
+    needs: package
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy release through Systems Manager
+        env:
+          ARTIFACT_URI: ${{ needs.package.outputs.artifact_uri }}
+          INSTANCE_ID: ${{ vars.APP_EC2_INSTANCE_ID }}
+        run: |
+          test -n "$INSTANCE_ID"
+          command="sudo /usr/local/sbin/spx-app-deploy '${GITHUB_SHA}' '${ARTIFACT_URI}'"
+          parameters=$(jq -cn --arg command "$command" '{commands: [$command]}')
+          command_id=$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
+            --parameters "$parameters" \
+            --comment "Deploy SPX Banking application ${GITHUB_SHA}" \
+            --query 'Command.CommandId' --output text)
+          if ! aws ssm wait command-executed --command-id "$command_id" --instance-id "$INSTANCE_ID"; then
+            aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' --output json || true
+            exit 1
+          fi
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' --output json
+
+  deploy_web:
+    name: Deploy web EC2
+    needs: [package, deploy_application]
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy release through Systems Manager
+        env:
+          ARTIFACT_URI: ${{ needs.package.outputs.artifact_uri }}
+          INSTANCE_ID: ${{ vars.WEB_EC2_INSTANCE_ID }}
+        run: |
+          test -n "$INSTANCE_ID"
+          command="sudo /usr/local/sbin/spx-web-deploy '${GITHUB_SHA}' '${ARTIFACT_URI}'"
+          parameters=$(jq -cn --arg command "$command" '{commands: [$command]}')
+          command_id=$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --targets "Key=InstanceIds,Values=${INSTANCE_ID}" \
+            --parameters "$parameters" \
+            --comment "Deploy SPX Banking web tier ${GITHUB_SHA}" \
+            --query 'Command.CommandId' --output text)
+          if ! aws ssm wait command-executed --command-id "$command_id" --instance-id "$INSTANCE_ID"; then
+            aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' --output json || true
+            exit 1
+          fi
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' --output json
