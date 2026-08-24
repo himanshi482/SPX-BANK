@@ -38,25 +38,30 @@ Do not expose ports `5000` or `3306` to the Internet.
 
 Each instance must have an instance profile containing `AmazonSSMManagedInstanceCore` plus read access to the private deployment S3 bucket. Confirm that both instances appear as **Managed nodes** in AWS Systems Manager before enabling the workflow.
 
-On each EC2 instance, clone this repository, then run the relevant script from its checked-out directory.
+On each EC2 instance, clone this repository, then run the relevant one-step setup script from its checked-out directory. The scripts install the initial release as well as the service configuration.
 
 ```bash
-git clone https://github.com/Weltsphere-Technologies-Pvt-Ltd/SPX-Bank-Three-Tier-App.git
-cd SPX-Bank-Three-Tier-App
-
-# Web EC2: use the application EC2 private IP address or private DNS name.
-sudo chmod +x deployment/three-tier/web/scripts/bootstrap-webserver.sh
-sudo deployment/three-tier/web/scripts/bootstrap-webserver.sh spxbank.example.com 10.0.1.25
-
-# Application EC2:
-sudo chmod +x deployment/three-tier/app/scripts/bootstrap-appserver.sh
-sudo deployment/three-tier/app/scripts/bootstrap-appserver.sh
-sudo nano /etc/spx-banking.env
+git clone https://github.com/Weltsphere-Technologies-Pvt-Ltd/SPX-Banking-Three-Tier-App.git
+cd SPX-Banking-Three-Tier-App
 ```
 
-Set `DB_HOST` in `/etc/spx-banking.env` to the RDS endpoint. Keep `DB_SSL_CA=/etc/ssl/certs/rds-global-bundle.pem`. The real environment file never goes into GitHub.
+On the **application EC2**, run:
 
-Run `database/setup_db.sql` against the RDS database, then run `rds/create_app_user.sql` after replacing its password placeholder. The master RDS username should not be placed in the application environment file.
+```bash
+sudo bash deployment/three-tier/app/scripts/setup-app-complete.sh
+```
+
+The script prompts for the RDS endpoint and master credentials, creates the `spxbank` schema and limited `spxapp` MySQL user, writes the protected `/etc/spx-banking.env` file, and starts Gunicorn. It never prints the supplied secrets.
+
+On the **web EC2**, run:
+
+```bash
+sudo bash deployment/three-tier/web/scripts/setup-web-complete.sh spxbank.nextsla.com APP_EC2_PRIVATE_IP
+```
+
+This script verifies the web-to-app connection, deploys the static assets, writes the Nginx virtual host, removes the default Nginx site, and reloads an already-running Nginx service.
+
+See [rds/README.md](rds/README.md) for the RDS security and verification checklist. The real environment file and RDS master credentials never go into GitHub.
 
 ## Deployment workflow
 
@@ -69,3 +74,4 @@ The `deploy-three-tier.yml` workflow is deliberately disabled until the reposito
 5. Updates the web EC2 second, serves the static files, and reloads Nginx.
 
 The deployment does not use an SSH private key or open port 22 to GitHub-hosted runners. For internet-facing production traffic, put an Application Load Balancer and HTTPS certificate in front of the web EC2 when you are ready to enable TLS.
+
